@@ -49,7 +49,7 @@ def main():
 
     model = BlockCausalACPredictor(
         d_model=1024, n_layers=24, n_heads=16,
-        latent_dim=1408, action_dim=7, proprio_dim=14, lang_dim=4096,
+        latent_dim=1408, action_dim=7, proprio_dim=8, lang_dim=4096,
         patches_per_frame=args.patches_per_frame, max_horizon=64,
         use_grad_ckpt=False,
     ).cuda().to(torch.bfloat16).eval()
@@ -65,7 +65,7 @@ def main():
                          dtype=torch.bfloat16, device="cuda")
     action_chunks = torch.randn(mb, args.action_chunk, 7,
                                 dtype=torch.bfloat16, device="cuda")
-    proprio_chunks = torch.zeros(mb, args.action_chunk, 14,
+    proprio_chunks = torch.zeros(mb, args.action_chunk, 8,
                                  dtype=torch.bfloat16, device="cuda")
     lang = torch.zeros(mb, 32, 4096, dtype=torch.bfloat16, device="cuda")
 
