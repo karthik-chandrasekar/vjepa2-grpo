@@ -78,7 +78,7 @@ class PredictorDataset(Dataset):
         lang_dim: int = 4096,
         max_lang_tokens: int = 32,
         action_dim: int = 7,
-        proprio_dim: int = 14,
+        proprio_dim: int = 8,
     ):
         self.index = DemoIndex(root)
         self.T_hist = T_hist

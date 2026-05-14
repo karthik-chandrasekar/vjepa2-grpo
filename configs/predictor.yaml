@@ -11,7 +11,7 @@ data:
   # (T_hist + horizon = 16-step sequences). ~37% more compute per train step.
   horizon: 8
   action_dim: 7
-  proprio_dim: 14
+  proprio_dim: 8
   lang_dim: 4096
   max_lang_tokens: 32
 

@@ -39,7 +39,7 @@ def gather_initial_state(
 
     proprio_parts = [np.atleast_1d(env_obs[k]) for k in proprio_keys if k in env_obs]
     proprio = np.concatenate(proprio_parts).astype(np.float32) if proprio_parts \
-              else np.zeros(14, dtype=np.float32)
+              else np.zeros(8, dtype=np.float32)
 
     return {
         "z0": z0,

@@ -83,7 +83,7 @@ def init_state_fn_factory(envs, encoder, instruction_lookup):
                 if k in obs:
                     proprio_parts.append(_torch.from_numpy(np.atleast_1d(obs[k])).float())
             proprio = _torch.cat(proprio_parts) if proprio_parts \
-                      else _torch.zeros(14, dtype=_torch.float32)
+                      else _torch.zeros(8, dtype=_torch.float32)
 
             # Lang emb: load from cache if exists, else zeros (placeholder)
             lang_emb = _load_lang_emb(instr, dim=4096, n_tokens=32)
@@ -139,7 +139,7 @@ def main():
     predictor = BlockCausalACPredictor(
         d_model=1024, n_layers=24, n_heads=16,
         latent_dim=1408, action_dim=cfg.policy.action_dim,
-        proprio_dim=14, lang_dim=4096, patches_per_frame=64,
+        proprio_dim=8, lang_dim=4096, patches_per_frame=64,
         use_grad_ckpt=False,
     ).cuda().to(torch.bfloat16)
     load_checkpoint(cfg.predictor_ckpt, predictor)

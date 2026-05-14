@@ -79,7 +79,7 @@ def cmd_diagnostics(args, policy):
     encoder = VJepa2Encoder(dtype=torch.bfloat16, pool_hw=8, device="cuda")
     predictor = BlockCausalACPredictor(
         d_model=1024, n_layers=24, n_heads=16,
-        latent_dim=1408, action_dim=7, proprio_dim=14, lang_dim=4096,
+        latent_dim=1408, action_dim=7, proprio_dim=8, lang_dim=4096,
         patches_per_frame=64, use_grad_ckpt=False,
     ).cuda().to(torch.bfloat16)
     load_checkpoint(args.diag_predictor_ckpt, predictor)

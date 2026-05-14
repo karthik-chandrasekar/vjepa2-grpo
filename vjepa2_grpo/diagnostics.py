@@ -68,7 +68,7 @@ def collect_rollouts(
         obs = env.reset()
         instr = env.language_instruction if hasattr(env, "language_instruction") \
                 else env.task.language
-        proprio0 = torch.zeros(14, device=device)  # placeholder; fill from obs
+        proprio0 = torch.zeros(8, device=device)  # placeholder; fill from obs
         # initial latent
         z0 = encoder.encode_single_observation(obs["agentview_image"]).to(device)
         pH, pW, D = z0.shape

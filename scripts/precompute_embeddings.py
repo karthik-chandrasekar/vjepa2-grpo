@@ -80,7 +80,7 @@ def iter_libero_demos(root: str) -> Iterator[Tuple[Path, dict]]:
                         if full in demo_grp:
                             parts.append(np.array(demo_grp[full][...]))
                     proprio = np.concatenate(parts, axis=-1) if parts \
-                              else np.zeros((rgb.shape[0], 14), dtype=np.float32)
+                              else np.zeros((rgb.shape[0], 8), dtype=np.float32)
                     yield (
                         h5_path.stem + "__" + demo_key,
                         {
@@ -122,7 +122,7 @@ def iter_ego4d_demos(root: str) -> Iterator[Tuple[Path, dict]]:
             {
                 "rgb": frames,
                 "actions": np.zeros((T, 7), dtype=np.float32),
-                "proprio": np.zeros((T, 14), dtype=np.float32),
+                "proprio": np.zeros((T, 8), dtype=np.float32),
                 "instruction": meta.get("narration", ""),
                 "success": 1,
                 "task_key": meta.get("task", "ego4d"),
@@ -148,7 +148,7 @@ def iter_robocasa_demos(root: str) -> Iterator[Tuple[Path, dict]]:
                     parts = [np.array(d[f"obs/{k}"][...]) for k in proprio_keys
                              if f"obs/{k}" in d]
                     proprio = np.concatenate(parts, axis=-1) if parts \
-                              else np.zeros((rgb.shape[0], 14), dtype=np.float32)
+                              else np.zeros((rgb.shape[0], 8), dtype=np.float32)
                     lang = d.attrs.get("language_instruction", "")
                     success = int(d.attrs.get("success", 1))
                     yield (

@@ -259,7 +259,7 @@ class BlockCausalACPredictor(nn.Module):
         n_heads: int = 16,
         latent_dim: int = 1408,
         action_dim: int = 7,
-        proprio_dim: int = 14,
+        proprio_dim: int = 8,
         lang_dim: int = 4096,
         patches_per_frame: int = 64,
         max_horizon: int = 32,
