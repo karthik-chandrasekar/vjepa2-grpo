@@ -196,13 +196,13 @@ def encode_demo(
     if T < FRAMES_PER_CLIP:
         # Just pad and encode one clip
         chunk = encoder.encode_clip(rgb)
-        return chunk.cpu().numpy().astype(np.float16)
+        return chunk.cpu().float().numpy().astype(np.float16)
 
     embeddings = []
     for start in range(0, T - FRAMES_PER_CLIP + 1, clip_stride):
         clip = rgb[start : start + FRAMES_PER_CLIP]
         z = encoder.encode_clip(clip)  # [T_, pH, pW, D] in BF16 on CPU
-        embeddings.append(z.cpu().numpy().astype(np.float16))
+        embeddings.append(z.cpu().float().numpy().astype(np.float16))
     return np.concatenate(embeddings, axis=0)
 
 
