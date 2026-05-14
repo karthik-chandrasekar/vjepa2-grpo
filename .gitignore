@@ -1,0 +1,38 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.env
+.envrc
+
+# data + checkpoints (never commit)
+data/
+checkpoints/
+logs/
+wandb/
+outputs/
+*.npy
+*.npz
+*.pt
+*.bin
+*.safetensors
+*.ivf
+*.faiss
+*.h5
+*.hdf5
+*.mp4
+
+# build / test scratch
+build/
+dist/
+.pytest_cache/
+*.deferred/
+
+# editor scratch / backups
+*.old
+*.bak
+.vscode/
+.idea/
+.DS_Store

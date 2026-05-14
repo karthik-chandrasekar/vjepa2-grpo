@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vjepa2-grpo"
+version = "0.1.0"
+description = "Imagined-trajectory GRPO on V-JEPA-2 latents for VLA RL"
+requires-python = ">=3.10"
+authors = [{name = "Karthik"}]
+dependencies = [
+    "torch==2.5.1",
+    "torchvision==0.20.1",
+    "transformers>=4.50.0",
+    "accelerate>=0.34",
+    "peft>=0.13",
+    "trl>=0.11",
+    "datasets>=3.0",
+    "huggingface_hub>=0.25",
+    "safetensors>=0.4",
+    "einops",
+    "timm",
+    "decord",
+    "av",
+    "imageio[ffmpeg]",
+    "wandb",
+    "rich",
+    "tqdm",
+    "omegaconf",
+    "hydra-core",
+    "faiss-gpu-cu12==1.9.0",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "seaborn",
+    "h5py",
+    "opencv-python-headless",
+]
+
+[project.optional-dependencies]
+sim = ["mujoco==2.3.7", "robosuite==1.4.1"]
+flash = ["flash-attn==2.7.2"]
+dev = ["pytest", "ruff", "ipython"]
+
+[tool.setuptools.packages.find]
+include = ["vjepa2_grpo*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"

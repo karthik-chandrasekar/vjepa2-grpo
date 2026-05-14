@@ -1,0 +1,46 @@
+# Critic training config.
+
+data:
+  embedding_root: /workspace/data/embeddings
+  window_K: 8
+  lang_dim: 4096
+  max_lang_tokens: 32
+
+model:
+  d_model: 768
+  n_layers: 6
+  n_heads: 12
+  latent_dim: 1408
+  lang_dim: 4096
+  n_ensemble: 4
+  window_K: 8
+  patches_per_frame: 64
+  dropout: 0.0
+
+optim:
+  lr: 3.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+schedule:
+  warmup: 500
+  total_steps: 20000
+
+train:
+  batch_size: 32
+  grad_accum: 1
+  bf16: true
+  clip_grad: 1.0
+  log_every: 50
+  ckpt_every: 2000
+  ckpt_dir: /workspace/checkpoints/critic
+  seed: 0
+  loss:
+    bootstrap_p: 0.75
+    w_mono: 0.05
+    success_threshold: 0.95
+
+wandb:
+  project: vjepa2-grpo
+  name: critic_main
+  mode: online

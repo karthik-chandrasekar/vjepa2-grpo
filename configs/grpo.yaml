@@ -1,0 +1,53 @@
+# GRPO post-training config.
+#
+# The headline run uses lam_anchor_max=1.0. The no-anchor ablation uses
+# lam_anchor_max=0.0 (passed via --override at the CLI).
+
+policy:
+  model_id: moojink/openvla-7b-oft-finetuned-libero-spatial
+  action_dim: 7
+  action_chunk: 8
+  dtype: bfloat16
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  # VERIFY these against the actual model's named_modules() on first run.
+  lora_target_modules: [q_proj, k_proj, v_proj, o_proj]
+  action_log_std_init: -1.0
+
+predictor_ckpt: /workspace/checkpoints/predictor/final.pt
+critic_ckpt: /workspace/checkpoints/critic/final.pt
+anchor_index_dir: /workspace/data/anchor_buffer
+
+env:
+  suite: libero_spatial         # one suite per run; cycle via --override
+  render_size: 384
+  n_envs: 8
+
+grpo:
+  group_size: 8
+  horizon: 10
+  action_chunk: 8           # must match policy.action_chunk
+  lr: 5.0e-6
+  weight_decay: 0.0
+  kl_coef: 0.0              # DAPO-style: KL off in loss; log forward-KL as tripwire
+  kl_tripwire: 1.0
+  lam_anchor_max: 1.0
+  lam_anchor_warmup_steps: 2000
+  lam_unc: 0.1
+  clip_grad: 1.0
+  success_rate_filter: true
+  dynamic_sample_max_trials: 4
+
+train:
+  total_steps: 1000
+  log_every: 10
+  eval_every: 100
+  save_every: 200
+  output_dir: /workspace/checkpoints/policy/main
+  seed: 0
+
+wandb:
+  project: vjepa2-grpo
+  name: grpo_main
+  mode: online
