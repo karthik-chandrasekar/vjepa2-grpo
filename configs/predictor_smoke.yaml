@@ -1,0 +1,56 @@
+# Predictor training config (V-JEPA-2-AC architecture port).
+#
+# Targets the v1 timeline: ~120k steps in ~4 days on a single H100 with FA2,
+# BF16, grad-checkpointing every 4 layers, and cached encoder embeddings.
+
+data:
+  embedding_root: /workspace/data/embeddings
+  T_hist: 8
+  # horizon 8 (was 4): matches the growing-context rollout within one
+  # action_chunk so training and inference see the same sequence lengths
+  # (T_hist + horizon = 16-step sequences). ~37% more compute per train step.
+  horizon: 8
+  action_dim: 7
+  proprio_dim: 8
+  lang_dim: 4096
+  max_lang_tokens: 32
+
+model:
+  d_model: 1024
+  n_layers: 24
+  n_heads: 16
+  latent_dim: 1408
+  patches_per_frame: 64       # after 8x8 spatial pool (must match encoder.pool_hw**2)
+  max_horizon: 32
+  max_lang_tokens: 64
+  dropout: 0.0
+  ffn_mult: 4
+  use_grad_ckpt: true
+
+optim:
+  lr: 1.5e-4
+  weight_decay: 0.05
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+
+schedule:
+  warmup: 20
+  total_steps: 120
+
+train:
+  batch_size: 16
+  grad_accum: 4
+  bf16: true
+  clip_grad: 1.0
+  log_every: 5
+  ckpt_every: 30
+  ckpt_dir: /workspace/checkpoints/predictor_smoke
+  seed: 0
+  loss:
+    w_tf: 0.5
+    w_rc: 0.5
+
+wandb:
+  project: vjepa2-grpo
+  name: predictor_smoke
+  mode: disabled
