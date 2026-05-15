@@ -86,7 +86,7 @@ def load_checkpoint(
     `scheduler` appended last for backward-compatible positional calls.
     Returns (step, extras).
     """
-    state = torch.load(path, map_location="cpu")
+    state = torch.load(path, map_location="cpu", weights_only=False)
     msg = model.load_state_dict(state["model"], strict=strict)
     print(f"[load] {path}  ->  {msg}")
     if optimizer is not None and "optimizer" in state:
