@@ -180,6 +180,11 @@ def rollout_group(
     anchor_t = torch.stack(all_anchor, dim=1)
     reward_t = torch.stack(all_reward, dim=1)
     reward_sum = reward_t.sum(dim=(1, 2))                  # [G]
+    # Per-component trajectory sums [G], so grpo.py can recombine with the
+    # anchor term normalized to unit cross-rollout variance (Plan B).
+    phat_sum   = phat_t.sum(dim=(1, 2))                    # [G]
+    anchor_sum = anchor_t.sum(dim=(1, 2))                  # [G]
+    sigma_sum  = sigma_t.sum(dim=(1, 2))                   # [G]
 
     return {
         "actions": actions_t,
@@ -190,6 +195,9 @@ def rollout_group(
         "anchor_d": anchor_t,
         "reward": reward_t,
         "reward_sum": reward_sum,
+        "phat_sum": phat_sum,
+        "anchor_sum": anchor_sum,
+        "sigma_sum": sigma_sum,
         "obs": obs,
         "instruction": instruction,
     }

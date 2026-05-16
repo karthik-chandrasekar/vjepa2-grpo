@@ -131,6 +131,17 @@ class LatentGRPOTrainer:
 
     # ---- core step ---------------------------------------------------------
 
+    def _calibrated_R(self, g: Dict, lam_a: float):
+        """Plan B: recombine reward from components with the anchor term
+        normalized to UNIT cross-rollout variance within the group, so lam_a
+        is exactly the anchor:task spread ratio (independent of the raw L2
+        magnitude of anchor distances). Returns R [G]."""
+        phat_s   = g["phat_sum"].float()
+        anchor_s = g["anchor_sum"].float()
+        sigma_s  = g["sigma_sum"].float()
+        anchor_norm = (anchor_s - anchor_s.mean()) / (anchor_s.std() + 1e-6)
+        return phat_s - lam_a * anchor_norm - self.lam_unc * sigma_s
+
     def step(self, init_states: List[Dict]) -> Dict:
         """One GRPO update from a batch of initial env states.
 
@@ -168,7 +179,10 @@ class LatentGRPOTrainer:
                 # or all-saturated rewards (no gradient signal). Retry up to
                 # dynamic_sample_max_trials before giving up.
                 if self.success_rate_filter:
-                    r_std = g["reward_sum"].float().std().item()
+                    # Plan B: gate on the std of the CALIBRATED reward (what
+                    # actually drives the gradient), not the raw fused
+                    # reward_sum (dominated by un-normalized anchor L2).
+                    r_std = self._calibrated_R(g, lam_a).std().item()
                     if r_std > 1e-3:
                         break
                 else:
@@ -178,7 +192,8 @@ class LatentGRPOTrainer:
         # --- (2) Advantage computation (per-group standardization) ----------
         all_adv, all_actions, all_obs, all_instr = [], [], [], []
         for g in groups:
-            R = g["reward_sum"].float()                          # [G]
+            # Plan B: calibrated reward (anchor normalized to unit group std)
+            R = self._calibrated_R(g, lam_a)                     # [G]
             A = (R - R.mean()) / (R.std() + 1e-6)
             all_adv.append(A.detach())
             all_actions.append(g["actions"].detach())            # [G, H, chunk, A]
@@ -243,6 +258,12 @@ class LatentGRPOTrainer:
             "reward/sigma_mean": mean_sigma,
             "lam_anchor": lam_a,
             "kl_to_ref": kl_tripwire_val,
+            "diag/phat_sum_std": float(np.mean(
+                [g["phat_sum"].float().std().item() for g in groups])),
+            "diag/anchor_sum_std_raw": float(np.mean(
+                [g["anchor_sum"].float().std().item() for g in groups])),
+            "diag/r_std_mean": float(np.mean(
+                [self._calibrated_R(g, lam_a).std().item() for g in groups])),
         }
         return metrics
 
