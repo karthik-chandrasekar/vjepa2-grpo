@@ -538,12 +538,39 @@ class OpenVLAOFTPolicy(nn.Module):
     ) -> torch.Tensor:
         """Re-evaluate log_prob of given actions under the CURRENT policy.
 
-        actions: [G, action_chunk, action_dim]
-        Returns: [G]   — differentiable through LoRA params + log_std.
+        Accepts two shapes:
+          [G, action_chunk, action_dim]               — single chunk per sample
+          [G, horizon, action_chunk, action_dim]      — multi-step trajectory
+
+        The 4D path is the GRPO trainer path: rollouts produce H action chunks
+        per group sample, all drawn from the SAME policy distribution (the
+        policy conditions only on the initial observation, not on rollout
+        intermediates — that's what makes latent-rollout GRPO tractable). So
+        we compute the policy mean ONCE per (obs, instr) and evaluate Gaussian
+        log-prob of every action against it, then sum across the H axis.
+
+        Returns: [G] — differentiable through LoRA params + log_std.
         """
         mean = self._compute_action_mean(obs, instr, grad=True)   # [C, A]
-        std = self.log_std.exp()
-        return self._gaussian_log_prob(actions, mean, std)
+        std = self.log_std.exp()                                  # [A]
+
+        if actions.dim() == 3:
+            # [G, C, A]
+            return self._gaussian_log_prob(actions, mean, std)
+        if actions.dim() == 4:
+            # [G, H, C, A]  ->  flatten H into batch, compute, sum back over H
+            G, H, C, Adim = actions.shape
+            if (C, Adim) != (self.action_chunk, self.action_dim):
+                raise ValueError(
+                    f"shape mismatch: actions[..., C={C}, A={Adim}] vs "
+                    f"policy(chunk={self.action_chunk}, action_dim={self.action_dim})"
+                )
+            actions_flat = actions.reshape(G * H, C, Adim)        # [G*H, C, A]
+            lp_flat = self._gaussian_log_prob(actions_flat, mean, std)  # [G*H]
+            return lp_flat.reshape(G, H).sum(dim=1)               # [G]
+        raise ValueError(
+            f"actions must be 3D [G,C,A] or 4D [G,H,C,A], got shape {actions.shape}"
+        )
 
     def _gaussian_log_prob(
         self, actions: torch.Tensor, mean: torch.Tensor, std: torch.Tensor,

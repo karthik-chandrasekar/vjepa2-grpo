@@ -32,7 +32,7 @@ from vjepa2_grpo.policy import OpenVLAOFTPolicy
 from vjepa2_grpo.predictor import BlockCausalACPredictor
 from vjepa2_grpo.critic import ProgressCritic
 from vjepa2_grpo.faiss_anchor import FaissAnchorBuffer
-from vjepa2_grpo.encoder import VJepa2Encoder
+from vjepa2_grpo.encoder_client import RemoteVJepa2Encoder
 from vjepa2_grpo.grpo import LatentGRPOTrainer
 from vjepa2_grpo.utils import (
     set_seed, load_checkpoint, maybe_init_wandb,
@@ -73,7 +73,8 @@ def init_state_fn_factory(envs, encoder, instruction_lookup):
             instr = getattr(env, "language_instruction",
                             instruction_lookup.get(env.task_meta["name"], ""))
             # Initial latent (single-frame tiled-to-64 hack)
-            z0 = encoder.encode_single_observation(obs["agentview_image"]).cuda()
+            # Encoder returns fp16; predictor is bf16. Cast here so all latents are bf16.
+            z0 = encoder.encode_single_observation(obs["agentview_image"]).cuda().to(torch.bfloat16)
             pH, pW, D = z0.shape
             z_hist = z0.reshape(1, 1, pH * pW, D)
 
@@ -86,10 +87,13 @@ def init_state_fn_factory(envs, encoder, instruction_lookup):
                       else _torch.zeros(8, dtype=_torch.float32)
 
             # Lang emb: load from cache if exists, else zeros (placeholder)
-            lang_emb = _load_lang_emb(instr, dim=4096, n_tokens=32)
+            # cast to bf16 to match the predictor's lang_in dtype
+            lang_emb = _load_lang_emb(instr, dim=4096, n_tokens=32).to(torch.bfloat16)
 
             states.append({
-                "obs_pixels": obs["agentview_image"],
+                # full obs dict for OFT policy (needs primary + wrist + state).
+                # Pass the raw env obs through; policy will pull the keys it needs.
+                "obs": obs,
                 "instruction": instr,
                 "proprio0": proprio.cuda(),
                 "lang_emb": lang_emb.cuda(),
@@ -118,6 +122,9 @@ def main():
     ap.add_argument("--tag", default="main", help="suffix for output dir")
     ap.add_argument("--override", nargs="*", default=[],
                     help="dot-list overrides, e.g. grpo.lam_anchor_max=0.0")
+    ap.add_argument("--resume", default="no",
+                    help="'no' (default), 'auto' (latest step_*/interrupt_* in output_dir), "
+                         "or explicit path to a saved ckpt directory")
     args = ap.parse_args()
 
     cfg = OmegaConf.load(args.config)
@@ -131,9 +138,25 @@ def main():
     print(f"[grpo:{args.tag}] config:\n{OmegaConf.to_yaml(cfg)}")
 
     # ---- Load frozen modules ------------------------------------------------
-    print("[grpo] loading V-JEPA-2 encoder...")
-    encoder = VJepa2Encoder(dtype=torch.bfloat16, pool_hw=8,
-                            attn_impl="sdpa", device="cuda")
+    # V-JEPA-2 runs in venv1 as an HTTP server (transformers 5.x), accessed
+    # here from venv-oft (transformers 4.40.1) via RemoteVJepa2Encoder.
+    # Fail fast if the encoder server is not running.
+    encoder_url = "http://127.0.0.1:8765"
+    print(f"[grpo] connecting to encoder server at {encoder_url}...")
+    encoder = RemoteVJepa2Encoder(encoder_url)
+    try:
+        info = encoder.wait_until_ready(max_wait_s=30.0)
+        print(f"[grpo] encoder ready: pool_hw={info['pool_hw']} "
+              f"embed_dim={info['embed_dim']}")
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"Encoder server not reachable at {encoder_url}.\n"
+            f"Start it first in venv1:\n"
+            f"  tmux new -s encserver -d\n"
+            f"  tmux send-keys -t encserver 'source /root/venv/bin/activate && "
+            f"python scripts/encoder_server.py' Enter\n"
+            f"Then re-run GRPO.\n\nOriginal error: {e}"
+        ) from e
 
     print(f"[grpo] loading predictor from {cfg.predictor_ckpt}")
     predictor = BlockCausalACPredictor(
@@ -212,7 +235,51 @@ def main():
         device="cuda",
     )
 
-    trainer.train(total_steps=cfg.train.total_steps, init_state_fn=init_fn)
+    # ---- Resume handling ---------------------------------------------------
+    start_step = 0
+    if args.resume != "no":
+        import re
+        out_dir = Path(cfg.train.output_dir)
+        if args.resume == "auto":
+            # Find latest step_*/interrupt_*  (NOT final_*, that's a completed run)
+            cands = []
+            for d in list(out_dir.glob("step_*")) + list(out_dir.glob("interrupt_*")):
+                if not d.is_dir() or d.name.endswith(".tmp"):
+                    continue
+                m = re.search(r"_(\d+)$", d.name)
+                if m:
+                    cands.append((int(m.group(1)), d))
+            if cands:
+                cands.sort(key=lambda x: x[0])
+                resume_path = cands[-1][1]
+                start_step = trainer.load_resume(resume_path)
+                print(f"[grpo] resuming from {resume_path} at step {start_step}")
+            else:
+                print(f"[grpo] --resume auto but no ckpts found in {out_dir}; starting fresh")
+        else:
+            resume_path = Path(args.resume)
+            start_step = trainer.load_resume(resume_path)
+            print(f"[grpo] resuming from {resume_path} at step {start_step}")
+
+    # ---- Interrupt handler -------------------------------------------------
+    # SIGINT / SIGTERM saves an interrupt_<step>/ ckpt and exits cleanly.
+    # RunPod's host-reclaim sends SIGTERM, so this gives us a recoverable
+    # snapshot of LoRA + optim if the pod is preempted mid-training.
+    import signal as _signal
+    def _on_signal(signum, frame):
+        s = trainer.step_idx
+        print(f"\n[grpo] received signal {signum}; saving interrupt ckpt at step {s}...",
+              flush=True)
+        try:
+            trainer._save(s, kind="interrupt")
+        except Exception as e:
+            print(f"[grpo] interrupt save FAILED: {e}", flush=True)
+        sys.exit(0)
+    _signal.signal(_signal.SIGINT, _on_signal)
+    _signal.signal(_signal.SIGTERM, _on_signal)
+
+    trainer.train(total_steps=cfg.train.total_steps, init_state_fn=init_fn,
+                  start_step=start_step)
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ def rollout_group(
     predictor,
     critic,
     anchor_buf,
-    obs_pixels,
+    obs,                # dict with agentview_image, robot0_eye_in_hand_image, state
     instruction: str,
     proprio0: torch.Tensor,
     lang_emb: torch.Tensor,
@@ -102,8 +102,8 @@ def rollout_group(
         # NOTE: this calls the policy `group_size` times. For efficiency on
         # the same observation, batch the policy. Here we call once and
         # sample group_size noisy versions (matching SimpleVLA-RL recipe).
-        actions, logp = policy.sample_action_chunk(
-            obs_pixels, instruction, n_samples=group_size,
+        actions, logp = policy.sample(
+            obs, instruction, n_samples=group_size,
         )
         # actions: [G, action_chunk, action_dim]
         all_actions.append(actions)
@@ -114,12 +114,16 @@ def rollout_group(
         # (predictor.rollout is the sliding-window reference; rollout_cached's
         #  semantics match predictor._rollout_growing_naive — see the parity test.)
         # Inputs need [G, action_chunk, action_dim] and [G, action_chunk, proprio_dim]
-        prop_chunk = proprio0_g.unsqueeze(1).expand(-1, action_chunk, -1).contiguous()
+        # Coerce all predictor inputs to its weight dtype. The encoder returns fp16,
+        # the policy returns fp32, the predictor is bf16. Cast once here so the
+        # rest of the pipeline doesn't have to track dtype.
+        pdt = next(predictor.parameters()).dtype
+        prop_chunk = proprio0_g.unsqueeze(1).expand(-1, action_chunk, -1).contiguous().to(pdt)
         z_next = predictor.rollout_cached(
-            z_hist=z_cur,
-            action_chunks=actions.to(device),
+            z_hist=z_cur.to(pdt),
+            action_chunks=actions.to(device).to(pdt),
             proprio_chunks=prop_chunk,
-            lang=lang_g,
+            lang=lang_g.to(pdt),
             horizon=action_chunk,
         )                                                  # [G, action_chunk, P, D]
         all_z.append(z_next)
@@ -186,6 +190,6 @@ def rollout_group(
         "anchor_d": anchor_t,
         "reward": reward_t,
         "reward_sum": reward_sum,
-        "obs_pixels": obs_pixels,
+        "obs": obs,
         "instruction": instruction,
     }

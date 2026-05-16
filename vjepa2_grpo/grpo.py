@@ -135,7 +135,7 @@ class LatentGRPOTrainer:
         """One GRPO update from a batch of initial env states.
 
         init_states: list of dicts with keys
-            obs_pixels: np.ndarray [H,W,3]
+            obs: dict with agentview_image, robot0_eye_in_hand_image, state
             instruction: str
             proprio0: torch.Tensor [proprio_dim]
             lang_emb: torch.Tensor [L, lang_dim]
@@ -152,7 +152,7 @@ class LatentGRPOTrainer:
                     predictor=self.predictor,
                     critic=self.critic,
                     anchor_buf=self.anchor_buf,
-                    obs_pixels=s["obs_pixels"],
+                    obs=s["obs"],
                     instruction=s["instruction"],
                     proprio0=s["proprio0"],
                     lang_emb=s["lang_emb"],
@@ -182,7 +182,7 @@ class LatentGRPOTrainer:
             A = (R - R.mean()) / (R.std() + 1e-6)
             all_adv.append(A.detach())
             all_actions.append(g["actions"].detach())            # [G, H, chunk, A]
-            all_obs.append(g["obs_pixels"])
+            all_obs.append(g["obs"])
             all_instr.append(g["instruction"])
 
         # --- (3) Recompute log-probs WITH grads and accumulate the loss ----
@@ -193,16 +193,13 @@ class LatentGRPOTrainer:
         n_chunks = 0
         for adv, actions, obs, instr in zip(all_adv, all_actions, all_obs, all_instr):
             # Recompute log-prob for each chunk in the trajectory.
-            # For action_chunk=8, horizon=10, that's 80 log-probs per group member.
-            # The OFT policy is called once per `(obs, instr)`, which is the
-            # initial observation only — we approximate the chunk log-probs as
-            # all drawn from the initial-obs distribution. This is the standard
-            # SimpleVLA-RL/RIPT-VLA approximation for action-chunk GRPO.
-            # Shape: actions [G, H, chunk, A]
-            G, H, C, Adim = actions.shape
-            actions_flat = actions.reshape(G, H * C, Adim)       # treat as one big chunk
-            # log_prob expects [G, chunk, A]; reshape accordingly
-            logp = self.policy.log_prob_action_chunks(obs, instr, actions_flat)  # [G]
+            # actions: [G, H, chunk, A].  The OFT policy conditions only on the
+            # initial obs, so all H chunks share the same policy distribution.
+            # policy.recompute_log_prob handles the [G, H, C, A] shape directly
+            # (computes the mean ONCE, evaluates Gaussian log-prob of every
+            # action against it, sums across H, C, A).  Standard SimpleVLA-RL /
+            # RIPT-VLA approximation for action-chunk GRPO.
+            logp = self.policy.recompute_log_prob(obs, instr, actions)  # [G]
             # Surrogate: -A * logp (REINFORCE with group baseline)
             pg = -(adv.to(logp.device) * logp).mean()
             total_pg = total_pg + pg.item()
@@ -251,10 +248,14 @@ class LatentGRPOTrainer:
 
     # ---- train loop --------------------------------------------------------
 
-    def train(self, total_steps: int, init_state_fn: Callable):
-        """init_state_fn(n_envs) -> List[Dict] of n_envs initial states."""
+    def train(self, total_steps: int, init_state_fn: Callable, start_step: int = 0):
+        """init_state_fn(n_envs) -> List[Dict] of n_envs initial states.
+
+        start_step: resume offset. The loop runs from start_step to total_steps.
+        """
         from tqdm import trange
-        for step in trange(total_steps, desc="GRPO"):
+        for step in trange(start_step, total_steps, desc="GRPO", initial=start_step,
+                           total=total_steps):
             self.step_idx = step
             init_states = init_state_fn(self.n_envs)
             metrics = self.step(init_states)
@@ -265,12 +266,95 @@ class LatentGRPOTrainer:
                 if self.wandb is not None:
                     self.wandb.log(metrics, step=step)
             if step > 0 and step % self.save_every == 0:
-                self._save(step)
-        self._save(total_steps)
+                self._save(step, kind="step")
+        self._save(total_steps, kind="final")
+        print(f"[grpo] done. final ckpt: {self.output_dir / f'final_{total_steps:06d}'}")
 
-    def _save(self, step: int):
-        path = self.output_dir / f"step_{step:06d}"
-        path.mkdir(exist_ok=True, parents=True)
-        self.policy.save_lora(str(path))
-        torch.save(self.optim.state_dict(), path / "optim.pt")
-        print(f"[save] -> {path}")
+    def _save(self, step: int, kind: str = "step"):
+        """Atomic save of policy LoRA + optim state.
+
+        kind: 'step' for periodic checkpoints, 'interrupt' for SIGINT-triggered,
+              'final' for the end-of-training snapshot.
+        Writes to <kind>_NNNNNN.tmp/, then os.replace to <kind>_NNNNNN/.
+        os.replace on a directory is atomic within a filesystem, so a SIGKILL
+        mid-save leaves the previous ckpt intact rather than half-written.
+        """
+        import os, shutil
+        final_path = self.output_dir / f"{kind}_{step:06d}"
+        tmp_path = self.output_dir / f"{kind}_{step:06d}.tmp"
+        if tmp_path.exists():
+            shutil.rmtree(tmp_path)
+        tmp_path.mkdir(parents=True)
+
+        # LoRA adapter (peft save_pretrained writes adapter_model.safetensors
+        # and adapter_config.json into the dir) + policy_extras.pt (log_std)
+        self.policy.save_lora(str(tmp_path))
+
+        # Training state: optimizer + step
+        torch.save({
+            "optimizer": self.optim.state_dict(),
+            "step": step,
+            "step_idx": self.step_idx,
+        }, tmp_path / "train_state.pt")
+
+        # Atomic directory swap
+        if final_path.exists():
+            shutil.rmtree(final_path)
+        os.replace(str(tmp_path), str(final_path))
+        print(f"[save] {kind}_{step:06d} -> {final_path}")
+
+        # Rolling prune: keep last 3 step_* (final/interrupt always kept)
+        if kind == "step":
+            self._prune_step_dirs(keep_last=3, milestone_every=200)
+
+    def _prune_step_dirs(self, keep_last: int = 3, milestone_every: int = 200):
+        """Rolling retention for step_NNNNNN/ checkpoints.
+
+        Keeps the last `keep_last` and every milestone (every milestone_every
+        steps). Never touches interrupt_* or final_*."""
+        import re, shutil
+        steps = []
+        for d in self.output_dir.glob("step_*"):
+            if not d.is_dir() or d.name.endswith(".tmp"):
+                continue
+            m = re.match(r"step_(\d+)$", d.name)
+            if m:
+                steps.append((int(m.group(1)), d))
+        # also nuke any .tmp dirs left behind by a previous crashed save
+        for tmp in self.output_dir.glob("*.tmp"):
+            if tmp.is_dir():
+                shutil.rmtree(tmp, ignore_errors=True)
+
+        if len(steps) <= keep_last:
+            return
+        steps.sort(key=lambda x: x[0])
+        keep_ids = set(s for s, _ in steps[-keep_last:])
+        if milestone_every > 0:
+            for s, _ in steps:
+                if s % milestone_every == 0:
+                    keep_ids.add(s)
+        removed = 0
+        for s, d in steps:
+            if s not in keep_ids:
+                shutil.rmtree(d, ignore_errors=True)
+                removed += 1
+        if removed:
+            print(f"[prune] removed {removed} old step dirs; kept {len(keep_ids)}")
+
+    def load_resume(self, ckpt_dir: Path):
+        """Restore LoRA + optim from a saved checkpoint directory.
+
+        Returns the saved step number (0 if no ckpt found).
+        """
+        import re
+        train_state_file = ckpt_dir / "train_state.pt"
+        if not train_state_file.exists():
+            raise FileNotFoundError(f"no train_state.pt in {ckpt_dir}")
+        # Load policy LoRA
+        self.policy.load_lora(str(ckpt_dir))
+        # Load optim + step
+        state = torch.load(train_state_file, map_location="cpu", weights_only=False)
+        self.optim.load_state_dict(state["optimizer"])
+        self.step_idx = state.get("step_idx", state.get("step", 0))
+        print(f"[resume] loaded from {ckpt_dir} at step {self.step_idx}")
+        return self.step_idx
