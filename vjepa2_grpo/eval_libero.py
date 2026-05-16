@@ -30,8 +30,11 @@ def make_libero_env(suite: str, task_id: int, render_size: int = 384):
     from libero.libero.envs import OffScreenRenderEnv
     bench = benchmark.get_benchmark_dict()[suite]()
     task = bench.get_task(task_id)
+    # Use the benchmark's resolver to get the full path; `task.bddl_file` is
+    # often just a basename, which fails OffScreenRenderEnv's os.path.exists check.
+    bddl_path = bench.get_task_bddl_file_path(task_id)
     env_args = dict(
-        bddl_file_name=task.bddl_file,
+        bddl_file_name=bddl_path,
         camera_heights=render_size,
         camera_widths=render_size,
     )

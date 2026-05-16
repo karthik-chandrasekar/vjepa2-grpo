@@ -19,6 +19,10 @@ Both runs share the same predictor / critic / anchor buffer; they differ
 only in the GRPO reward and the resulting policy.
 """
 from __future__ import annotations
+# CPU software rendering for MuJoCo offscreen — RunPod GPU containers lack
+# working EGL/GLX. MUST be set before any mujoco/robosuite import.
+import os as _os
+_os.environ.setdefault("MUJOCO_GL", "osmesa")
 import sys
 import argparse
 from pathlib import Path
@@ -79,20 +83,21 @@ def init_state_fn_factory(envs, encoder, instruction_lookup):
             z_hist = z0.reshape(1, 1, pH * pW, D)
 
             # Initial proprio: pull standard LIBERO keys
-            proprio_parts = []
-            for k in ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]:
-                if k in obs:
-                    proprio_parts.append(_torch.from_numpy(np.atleast_1d(obs[k])).float())
-            proprio = _torch.cat(proprio_parts) if proprio_parts \
-                      else _torch.zeros(8, dtype=_torch.float32)
+            # Predictor was trained on the SAME canonical 8-dim proprio as the
+            # policy: eef_pos[3] + quat2axisangle(eef_quat)[3] + gripper_qpos[2].
+            # (The naive eef_pos+eef_quat+gripper concat is 9-dim and mismatches
+            #  the predictor's prop_in which expects 8.)
+            proprio = _torch.from_numpy(_libero_obs_to_state(obs)).float()
 
             # Lang emb: load from cache if exists, else zeros (placeholder)
             # cast to bf16 to match the predictor's lang_in dtype
             lang_emb = _load_lang_emb(instr, dim=4096, n_tokens=32).to(torch.bfloat16)
 
+            # OFT policy needs an 8-dim obs["state"]; raw LIBERO splits proprio
+            # across eef_pos/eef_quat/gripper_qpos. Compose it canonically.
+            obs = dict(obs)  # shallow copy so we don't mutate the env's buffer
+            obs["state"] = _libero_obs_to_state(obs)
             states.append({
-                # full obs dict for OFT policy (needs primary + wrist + state).
-                # Pass the raw env obs through; policy will pull the keys it needs.
                 "obs": obs,
                 "instruction": instr,
                 "proprio0": proprio.cuda(),
@@ -102,6 +107,21 @@ def init_state_fn_factory(envs, encoder, instruction_lookup):
         return states
 
     return fn
+
+
+def _libero_obs_to_state(obs):
+    """Compose the 8-dim OFT proprio vector from raw LIBERO obs keys.
+
+    Matches openvla-oft/experiments/robot/libero/run_libero_eval.py:257 exactly:
+      state = concat(eef_pos[3], quat2axisangle(eef_quat)[3], gripper_qpos[2])
+    The quaternion->axis-angle conversion (4->3) is why this is 8-dim not 9.
+    """
+    from robosuite.utils.transform_utils import quat2axisangle
+    return np.concatenate([
+        np.asarray(obs["robot0_eef_pos"], dtype=np.float32),            # 3
+        quat2axisangle(np.asarray(obs["robot0_eef_quat"], dtype=np.float32)),  # 4->3
+        np.asarray(obs["robot0_gripper_qpos"], dtype=np.float32),       # 2
+    ]).astype(np.float32)                                               # = 8
 
 
 def _load_lang_emb(text, dim=4096, n_tokens=32):
